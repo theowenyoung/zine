@@ -1,0 +1,22 @@
+.{
+    .name = .flow_syntax,
+    .version = "0.1.0",
+    .fingerprint = 0x3ba2584ea1cec85f,
+    .minimum_zig_version = "0.15.0",
+
+    .dependencies = .{
+        .tree_sitter = .{
+            .url = "https://github.com/neurocyte/tree-sitter/releases/download/master-f1f032d24f621e2ee4deab1c424d3bf9fb809f6e/source.tar.gz",
+            .hash = "tree_sitter-0.22.4-150-g7e3f5726-z0LhyN88UicDHlr22vQnOZ3DW9NWN1gOhDwLuCRXvrh2",
+        },
+        .cbor = .{
+            .url = "git+https://github.com/kristoff-it/cbor?ref=zig-0.15#66c3784a6b1cf56485d462502167ec2ce402e8fb",
+            .hash = "cbor-1.0.0-RcQE_CUwAQChkeU-LO-eTSbLAdRox-wuxUGmi2nDAWri",
+        },
+    },
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+    },
+}

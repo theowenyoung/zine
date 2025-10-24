@@ -46,6 +46,9 @@ pub const Fields = struct {
     pub const title =
         \\The website title, as defined in your `build.zig`.
     ;
+    pub const taxonomies =
+        \\Taxonomies configured for this site.
+    ;
 };
 pub const Builtins = struct {
     pub const localeCode = struct {
@@ -77,6 +80,80 @@ pub const Builtins = struct {
                     .err = "only available in a multilingual website",
                 },
             };
+        }
+    };
+    pub const taxonomy = struct {
+        pub const signature: Signature = .{
+            .params = &.{.String},
+            .ret = .Taxonomy,
+        };
+        pub const docs_description =
+            \\Returns a taxonomy by name.
+        ;
+        pub fn call(
+            site: *const Site,
+            gpa: Allocator,
+            ctx: *const context.Template,
+            args: []const Value,
+        ) context.CallError!Value {
+            const bad_arg: Value = .{
+                .err = "expected 1 string argument",
+            };
+            if (args.len != 1) return bad_arg;
+
+            const name = switch (args[0]) {
+                .string => |s| s.value,
+                else => return bad_arg,
+            };
+
+            const variant = &ctx._meta.build.variants[site._meta.variant_id];
+            for (variant.taxonomies.entries.items) |*inst| {
+                if (std.mem.eql(u8, inst.name, name)) {
+                    const taxonomy_ctx = root.buildTaxonomyContext(
+                        gpa,
+                        variant,
+                        site,
+                        inst,
+                    ) catch return error.OutOfMemory;
+                    return Value.from(gpa, taxonomy_ctx);
+                }
+            }
+
+            return Value.errFmt(gpa, "unknown taxonomy '{s}'", .{name});
+        }
+    };
+
+    pub const taxonomies = struct {
+        pub const signature: Signature = .{
+            .ret = .{ .Many = .Taxonomy },
+        };
+        pub const docs_description =
+            \\Returns all configured taxonomies.
+        ;
+        pub fn call(
+            site: *const Site,
+            gpa: Allocator,
+            ctx: *const context.Template,
+            args: []const Value,
+        ) context.CallError!Value {
+            if (args.len != 0) return .{ .err = "expected 0 arguments" };
+
+            const variant = &ctx._meta.build.variants[site._meta.variant_id];
+            const entries = variant.taxonomies.entries.items;
+            const arr = try gpa.alloc(Value, entries.len);
+            errdefer gpa.free(arr);
+
+            for (entries, arr) |*inst, *out| {
+                const taxonomy_ctx = root.buildTaxonomyContext(
+                    gpa,
+                    variant,
+                    site,
+                    inst,
+                ) catch return error.OutOfMemory;
+                out.* = try Value.from(gpa, taxonomy_ctx);
+            }
+
+            return context.Array.init(gpa, Value, arr);
         }
     };
     pub const localeName = struct {

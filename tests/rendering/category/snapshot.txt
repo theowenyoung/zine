@@ -1,0 +1,23 @@
+*-----------------------------------------------*
+|    WARNING: THIS IS A DEBUG BUILD OF ZINE     |
+|-----------------------------------------------|
+| Debug builds enable expensive sanity checks   |
+| that reduce performance.                      |
+|                                               |
+| To create a release build, run:               |
+|                                               |
+|           zig build --release=fast            |
+|                                               |
+| If you're investigating a bug in Zine, then a |
+| debug build might turn confusing behavior     |
+| into a crash.                                 |
+|                                               |
+| To disable all forms of concurrency, you can  |
+| add the following flag to your build command: |
+|                                               |
+|              -Dsingle-threaded                |
+|                                               |
+*-----------------------------------------------*
+
+WARNING: found plain HTML file layouts/taxonomy_list.html, did you mean to give it a shtml extension?
+WARNING: found plain HTML file layouts/taxonomy_single.html, did you mean to give it a shtml extension?

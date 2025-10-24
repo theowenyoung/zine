@@ -20,6 +20,8 @@ const String = StringTable.String;
 const PathTable = @import("PathTable.zig");
 const Path = PathTable.Path;
 const PathName = PathTable.PathName;
+const Taxonomy = @import("Taxonomy.zig");
+const root = @import("root.zig");
 
 output_path_prefix: []const u8,
 /// Open for the full duration of the program.
@@ -39,6 +41,7 @@ pages: std.ArrayListUnmanaged(Page),
 urls: std.AutoHashMapUnmanaged(PathName, LocationHint),
 /// Overflowing LocationHints end up in here, populated alongside 'urls'.
 collisions: std.ArrayListUnmanaged(Collision),
+taxonomies: Taxonomy.Store = .{},
 
 i18n: context.Map.ZiggyMap,
 i18n_src: [:0]const u8,
@@ -52,7 +55,14 @@ const Collision = struct {
 };
 
 /// Tells you where to look when figuring out what an output URL maps to.
-pub const ResourceKind = enum { page_main, page_alias, page_alternative, page_asset };
+pub const ResourceKind = enum {
+    page_main,
+    page_alias,
+    page_alternative,
+    page_asset,
+    taxonomy_list,
+    taxonomy_term,
+};
 pub const LocationHint = struct {
     id: u32, // index into pages
     kind: union(ResourceKind) {
@@ -61,6 +71,11 @@ pub const LocationHint = struct {
         page_alternative: []const u8,
         // for page assets, 'id' is the page that owns the asset
         page_asset: std.atomic.Value(u32), // reference counting
+        taxonomy_list,
+        taxonomy_term: struct {
+            taxonomy: u32,
+            term: u32,
+        },
     },
     pub fn fmt(
         lh: LocationHint,
@@ -78,21 +93,35 @@ pub const LocationHint = struct {
         pages: []const Page,
 
         pub fn format(f: LocationHint.Formatter, w: *Writer) !void {
-            const page = f.pages[f.lh.id];
-            try w.print("{f}", .{page._scan.file.fmt(f.st, f.pt, null, "")});
-
             switch (f.lh.kind) {
                 .page_main => {
+                    const page = f.pages[f.lh.id];
+                    try w.print("{f}", .{page._scan.file.fmt(f.st, f.pt, null, "")});
                     try w.writeAll(" (main output)");
                 },
                 .page_alias => {
+                    const page = f.pages[f.lh.id];
+                    try w.print("{f}", .{page._scan.file.fmt(f.st, f.pt, null, "")});
                     try w.writeAll(" (page alias)");
                 },
                 .page_alternative => |alt| {
+                    const page = f.pages[f.lh.id];
+                    try w.print("{f}", .{page._scan.file.fmt(f.st, f.pt, null, "")});
                     try w.print(" (page alternative '{s}')", .{alt});
                 },
                 .page_asset => {
+                    const page = f.pages[f.lh.id];
+                    try w.print("{f}", .{page._scan.file.fmt(f.st, f.pt, null, "")});
                     try w.writeAll(" (page asset)");
+                },
+                .taxonomy_list => {
+                    try w.writeAll("<taxonomy list>");
+                },
+                .taxonomy_term => |info| {
+                    try w.print("<taxonomy term {}:{}>", .{
+                        f.lh.id,
+                        info.term,
+                    });
                 },
             }
         }
@@ -195,6 +224,10 @@ pub fn deinit(v: *const Variant, gpa: Allocator) void {
     {
         var c = v.collisions;
         c.deinit(gpa);
+    }
+    {
+        var tx = v.taxonomies;
+        tx.deinit(gpa);
     }
     v.i18n_arena.promote(gpa).deinit();
 }
@@ -538,11 +571,253 @@ pub fn scanContentDir(
         .pages = pages,
         .urls = urls,
         .collisions = collisions,
+        .taxonomies = .{},
         .i18n = i18n,
         .i18n_src = i18n_src,
         .i18n_diag = i18n_diag,
         .i18n_arena = i18n_arena.state,
     };
+}
+
+pub fn collectTaxonomies(
+    v: *Variant,
+    gpa: Allocator,
+    configs: []const *const root.TaxonomyConfig,
+) !void {
+    v.taxonomies.deinit(gpa);
+    v.taxonomies = .{};
+    if (configs.len == 0) return;
+
+    const index_html = v.string_table.get("index.html") orelse @panic("missing index.html string");
+    const empty_path: Path = @enumFromInt(0);
+
+    try v.taxonomies.entries.ensureTotalCapacity(gpa, configs.len);
+    for (configs, 0..) |cfg_ptr, idx| {
+        const path_component = try v.string_table.intern(gpa, cfg_ptr.name);
+        const taxonomy_dir = try v.path_table.internExtend(gpa, empty_path, path_component);
+        const list_path: PathName = .{ .path = taxonomy_dir, .name = index_html };
+
+        const inst = try v.taxonomies.entries.addOne(gpa);
+        inst.* = .{
+            .id = @intCast(idx),
+            .name = cfg_ptr.name,
+            .config = cfg_ptr,
+            .list_path = list_path,
+        };
+
+        const hint: LocationHint = .{
+            .id = inst.id,
+            .kind = .taxonomy_list,
+        };
+
+        const gop = try v.urls.getOrPut(gpa, list_path);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = hint;
+        } else {
+            try v.collisions.append(gpa, .{
+                .url = list_path,
+                .loc = hint,
+                .previous = gop.value_ptr.*,
+            });
+        }
+    }
+
+    var name_to_index = std.StringHashMapUnmanaged(u32){};
+    defer name_to_index.deinit(gpa);
+    try name_to_index.ensureTotalCapacity(
+        gpa,
+        @intCast(v.taxonomies.entries.items.len),
+    );
+    for (v.taxonomies.entries.items) |inst| {
+        name_to_index.putAssumeCapacityNoClobber(inst.name, inst.id);
+    }
+
+    const has_tags_taxonomy = name_to_index.get("tags") != null;
+
+    const PageOrder = struct {
+        pages: []const Page,
+        variant: *Variant,
+        pub fn lessThan(ctx: @This(), lhs: u32, rhs: u32) bool {
+            const left = ctx.pages[lhs];
+            const right = ctx.pages[rhs];
+
+            if (right.date.eql(left.date)) {
+                var bl: [std.fs.max_path_bytes]u8 = undefined;
+                var br: [std.fs.max_path_bytes]u8 = undefined;
+                const lhs_str = std.fmt.bufPrint(&bl, "{f}", .{
+                    left._scan.url.fmt(
+                        &ctx.variant.string_table,
+                        &ctx.variant.path_table,
+                        null,
+                        false,
+                    ),
+                }) catch unreachable;
+                const rhs_str = std.fmt.bufPrint(&br, "{f}", .{
+                    right._scan.url.fmt(
+                        &ctx.variant.string_table,
+                        &ctx.variant.path_table,
+                        null,
+                        false,
+                    ),
+                }) catch unreachable;
+                return std.mem.order(u8, lhs_str, rhs_str) == .lt;
+            }
+
+            return right.date.lessThan(left.date);
+        }
+    };
+
+    const TermOrder = struct {
+        st: *const StringTable,
+        pub fn lessThan(ctx: @This(), lhs: Taxonomy.Term, rhs: Taxonomy.Term) bool {
+            const left = lhs;
+            const right = rhs;
+            if (left.pages.items.len != right.pages.items.len) {
+                return left.pages.items.len > right.pages.items.len;
+            }
+            return std.mem.order(
+                u8,
+                left.slug.slice(ctx.st),
+                right.slug.slice(ctx.st),
+            ) == .lt;
+        }
+    };
+
+    const AddTerms = struct {
+        fn add(
+            variant: *Variant,
+            allocator: Allocator,
+            name_map: *std.StringHashMapUnmanaged(u32),
+            taxonomy_store: *Taxonomy.Store,
+            name: []const u8,
+            terms: []const []const u8,
+            page_index: u32,
+            index_name: String,
+        ) !void {
+            const entry_index = name_map.get(name) orelse return;
+            const inst = &taxonomy_store.entries.items[entry_index];
+
+            for (terms) |term_name| {
+                const slug = Taxonomy.slugify(allocator, &variant.string_table, term_name) catch |err| switch (err) {
+                    error.InvalidSlug => continue,
+                    else => |e| return e,
+                };
+
+                const term_idx = blk: {
+                    for (inst.terms.items, 0..) |*existing, idx| {
+                        if (existing.slug == slug) break :blk idx;
+                    }
+
+                    const term_dir = try variant.path_table.internExtend(allocator, inst.list_path.path, slug);
+                    const term_path: PathName = .{ .path = term_dir, .name = index_name };
+
+                    const new_term = try inst.terms.addOne(allocator);
+                    new_term.* = .{
+                        .name = term_name,
+                        .slug = slug,
+                        .path = term_path,
+                    };
+
+                    const hint: LocationHint = .{
+                        .id = inst.id,
+                        .kind = .{ .taxonomy_term = .{
+                            .taxonomy = inst.id,
+                            .term = @intCast(inst.terms.items.len - 1),
+                        } },
+                    };
+
+                    const gop = try variant.urls.getOrPut(allocator, term_path);
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = hint;
+                    } else {
+                        try variant.collisions.append(allocator, .{
+                            .url = term_path,
+                            .loc = hint,
+                            .previous = gop.value_ptr.*,
+                        });
+                    }
+
+                    break :blk inst.terms.items.len - 1;
+                };
+
+                const term_entry = &inst.terms.items[term_idx];
+                if (std.mem.indexOfScalar(u32, term_entry.pages.items, page_index) == null) {
+                    try term_entry.pages.append(allocator, page_index);
+                }
+            }
+        }
+    };
+
+    for (v.pages.items, 0..) |page, page_idx_usize| {
+        const page_index: u32 = @intCast(page_idx_usize);
+        if (!page._parse.active) continue;
+        if (page._parse.status != .parsed) continue;
+
+        if (has_tags_taxonomy) {
+            if (page.tags.len > 0) try AddTerms.add(
+                v,
+                gpa,
+                &name_to_index,
+                &v.taxonomies,
+                "tags",
+                page.tags,
+                page_index,
+                index_html,
+            );
+        }
+
+        for (page.taxonomy_assignments) |assignment| {
+            try AddTerms.add(
+                v,
+                gpa,
+                &name_to_index,
+                &v.taxonomies,
+                assignment.name,
+                assignment.terms,
+                page_index,
+                index_html,
+            );
+        }
+    }
+
+    const page_ctx = PageOrder{
+        .pages = v.pages.items,
+        .variant = v,
+    };
+
+    for (v.taxonomies.entries.items) |*inst| {
+        const term_ctx = TermOrder{
+            .st = &v.string_table,
+        };
+
+        for (inst.terms.items) |*term| {
+            std.sort.insertion(
+                u32,
+                term.pages.items,
+                page_ctx,
+                PageOrder.lessThan,
+            );
+        }
+
+        std.sort.insertion(
+            Taxonomy.Term,
+            inst.terms.items,
+            term_ctx,
+            TermOrder.lessThan,
+        );
+
+        for (inst.terms.items, 0..) |term, term_idx| {
+            if (v.urls.getPtr(term.path)) |hint_ptr| {
+                hint_ptr.* = .{
+                    .id = inst.id,
+                    .kind = .{ .taxonomy_term = .{
+                        .taxonomy = inst.id,
+                        .term = @intCast(term_idx),
+                    } },
+                };
+            }
+        }
+    }
 }
 
 pub fn installAssets(

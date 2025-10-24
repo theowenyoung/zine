@@ -8,6 +8,7 @@ const builtin = @import("builtin");
 const tracy = @import("tracy");
 const ziggy = @import("ziggy");
 const supermd = @import("supermd");
+const superhtml = @import("superhtml");
 const fatal = @import("fatal.zig");
 const worker = @import("worker.zig");
 const context = @import("context.zig");
@@ -18,9 +19,35 @@ const String = StringTable.String;
 const PathTable = @import("PathTable.zig");
 const Path = PathTable.Path;
 const PathName = PathTable.PathName;
+const Taxonomy = @import("Taxonomy.zig");
+const Value = context.Value;
 
 pub var progress_buf: [4096]u8 = undefined;
 pub var progress: std.Progress.Node = undefined;
+
+pub const TaxonomyConfig = struct {
+    name: []const u8,
+    paginate_by: ?usize = null,
+    paginate_path: []const u8 = "page",
+    feed: bool = false,
+    render: bool = true,
+    lang: ?[]const u8 = null,
+};
+
+const TaxonomyVM = superhtml.VM(context.Template, context.Value);
+
+const TaxonomyLayout = struct {
+    src: []const u8,
+    html_ast: superhtml.html.Ast,
+    ast: superhtml.Ast,
+    is_xml: bool,
+
+    pub fn deinit(t: *TaxonomyLayout, gpa: Allocator) void {
+        gpa.free(t.src);
+        t.html_ast.deinit(gpa);
+        if (t.ast.errors.len == 0) t.ast.deinit(gpa);
+    }
+};
 
 pub const Site = struct {
     /// Title of the website
@@ -61,6 +88,7 @@ pub const Site = struct {
     ///    height: auto;
     /// }
     image_size_attributes: bool = false,
+    taxonomies: []const TaxonomyConfig = &.{},
 };
 
 pub const MultilingualSite = struct {
@@ -115,6 +143,7 @@ pub const MultilingualSite = struct {
     ///    height: auto;
     /// }
     image_size_attributes: bool = false,
+    taxonomies: []const TaxonomyConfig = &.{},
 };
 
 /// A localized variant of a multilingual website
@@ -145,6 +174,7 @@ pub const Locale = struct {
     ///
     /// The last case is how you create a default locale.
     output_prefix_override: ?[]const u8 = null,
+    taxonomies: ?[]const TaxonomyConfig = null,
 };
 
 pub const Config = union(enum) {
@@ -269,6 +299,8 @@ pub const Config = union(enum) {
                     "error: url_path_prefix '{s}' in zine.ziggy: {s}\n",
                     .{ s.url_path_prefix, msg },
                 );
+
+                validateTaxonomyList(s.taxonomies, "zine.ziggy");
             },
             .Multilingual => |ml| {
                 const u = std.Uri.parse(ml.host_url) catch |err| {
@@ -310,6 +342,8 @@ pub const Config = union(enum) {
                     "error: path '{s}' in zine.ziggy: {s}\n",
                     .{ p, msg },
                 );
+
+                validateTaxonomyList(ml.taxonomies, "zine.ziggy");
 
                 for (ml.locales) |locale| {
                     if (locale.code.len == 0) fatal.msg(
@@ -371,8 +405,55 @@ pub const Config = union(enum) {
                             .{ opo, locale.code, msg },
                         );
                     }
+
+                    if (locale.taxonomies) |list| {
+                        validateTaxonomyList(list, locale.code);
+                    }
                 }
             },
+        }
+    }
+
+    fn validateTaxonomyList(list: []const TaxonomyConfig, ctx: []const u8) void {
+        for (list, 0..) |tax, idx| {
+            if (tax.name.len == 0) fatal.msg(
+                "error: taxonomy in {s} has an empty name",
+                .{ctx},
+            );
+
+            if (!isValidTaxonomyIdentifier(tax.name)) fatal.msg(
+                "error: taxonomy '{s}' in {s} must only contain ASCII letters, digits, '_' or '-'",
+                .{ tax.name, ctx },
+            );
+
+            if (tax.paginate_path.len == 0) fatal.msg(
+                "error: taxonomy '{s}' in {s} has an empty paginate_path",
+                .{ tax.name, ctx },
+            );
+
+            if (!isValidTaxonomyIdentifier(tax.paginate_path)) fatal.msg(
+                "error: taxonomy '{s}' in {s} has an invalid paginate_path '{s}'",
+                .{ tax.name, ctx, tax.paginate_path },
+            );
+
+            if (tax.paginate_by) |n| if (n == 0) fatal.msg(
+                "error: taxonomy '{s}' in {s} has paginate_by set to 0",
+                .{ tax.name, ctx },
+            );
+
+            if (tax.lang) |lang| {
+                if (lang.len == 0) fatal.msg(
+                    "error: taxonomy '{s}' in {s} has an empty lang value",
+                    .{ tax.name, ctx },
+                );
+            }
+
+            for (list[idx + 1 ..]) |other| {
+                if (std.mem.eql(u8, other.name, tax.name)) fatal.msg(
+                    "error: taxonomy '{s}' defined multiple times in {s}",
+                    .{ tax.name, ctx },
+                );
+            }
         }
     }
 
@@ -417,6 +498,568 @@ pub const Config = union(enum) {
         };
     }
 };
+
+pub fn isValidTaxonomyIdentifier(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if (std.ascii.isAlphanumeric(c)) continue;
+        if (c == '_' or c == '-') continue;
+        return false;
+    }
+    return true;
+}
+
+fn formatTaxonomyPath(
+    allocator: Allocator,
+    variant: *const Variant,
+    site: *const context.Site,
+    pn: PathName,
+    include_host: bool,
+) ![]const u8 {
+    var aw: Writer.Allocating = .init(allocator);
+    const w = &aw.writer;
+
+    if (include_host) w.print("{s}", .{site.host_url}) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
+
+    w.writeAll("/") catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
+    switch (site._meta.kind) {
+        .simple => |prefix| if (prefix.len > 0) {
+            w.print("{s}/", .{prefix}) catch |err| switch (err) {
+                error.WriteFailed => return error.OutOfMemory,
+                else => return err,
+            };
+        },
+        .multi => |loc| {
+            const out_prefix = loc.output_prefix_override orelse loc.code;
+            if (out_prefix.len > 0) {
+                w.print("{s}/", .{out_prefix}) catch |err| switch (err) {
+                    error.WriteFailed => return error.OutOfMemory,
+                    else => return err,
+                };
+            }
+        },
+    }
+
+    w.print("{f}", .{
+        pn.path.fmt(
+            &variant.string_table,
+            &variant.path_table,
+            null,
+            true,
+        ),
+    }) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
+
+    return aw.written();
+}
+
+fn taxonomyOutputDir(
+    allocator: Allocator,
+    build: *Build,
+    variant: *const Variant,
+    site: *const context.Site,
+    pn: PathName,
+) ![]const u8 {
+    return switch (build.cfg.*) {
+        .Site => try std.fmt.allocPrint(allocator, "{f}", .{
+            pn.path.fmt(
+                &variant.string_table,
+                &variant.path_table,
+                null,
+                true,
+            ),
+        }),
+        .Multilingual => try std.fmt.allocPrint(allocator, "{f}", .{
+            pn.path.fmt(
+                &variant.string_table,
+                &variant.path_table,
+                site._meta.kind.multi.output_prefix_override orelse site._meta.kind.multi.code,
+                true,
+            ),
+        }),
+    };
+}
+
+pub fn buildTaxonomyContext(
+    allocator: Allocator,
+    variant: *const Variant,
+    site: *const context.Site,
+    inst: *const Taxonomy.Instance,
+) !context.Taxonomy {
+    const rel_path = formatTaxonomyPath(allocator, variant, site, inst.list_path, false) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
+    errdefer allocator.free(rel_path);
+    const permalink = formatTaxonomyPath(allocator, variant, site, inst.list_path, true) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
+    errdefer allocator.free(permalink);
+
+    const terms = try allocator.alloc(context.TaxonomyTerm, inst.terms.items.len);
+    errdefer allocator.free(terms);
+
+    for (inst.terms.items, 0..) |term, idx| {
+        const term_path = formatTaxonomyPath(allocator, variant, site, term.path, false) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => return err,
+        };
+        errdefer allocator.free(term_path);
+        const term_permalink = formatTaxonomyPath(allocator, variant, site, term.path, true) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => return err,
+        };
+        errdefer allocator.free(term_permalink);
+
+        const page_values = try allocator.alloc(Value, term.pages.items.len);
+        errdefer allocator.free(page_values);
+
+        for (term.pages.items, 0..) |page_idx, page_value_idx| {
+            page_values[page_value_idx] = try Value.from(
+                allocator,
+                &variant.pages.items[page_idx],
+            );
+        }
+
+        terms[idx] = .{
+            .name = term.name,
+            .slug = term.slug.slice(&variant.string_table),
+            .path = term_path,
+            .permalink = term_permalink,
+            .pages = page_values,
+        };
+    }
+
+    return context.Taxonomy{
+        .name = inst.name,
+        .path = rel_path,
+        .permalink = permalink,
+        .terms = terms,
+        .config = context.TaxonomyConfig.init(inst.config),
+    };
+}
+
+fn resolveTaxonomyLayoutPath(
+    arena: Allocator,
+    build: *Build,
+    taxonomy_name: []const u8,
+    kind: enum { list, single },
+) ![]const u8 {
+    const filename = if (kind == .list) "list.shtml" else "single.shtml";
+    const specific = try std.fmt.allocPrint(arena, "{s}/{s}", .{
+        taxonomy_name,
+        filename,
+    });
+
+    if (build.layouts_dir.statFile(specific)) |_| {
+        return specific;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => fatal.file(specific, err),
+    }
+
+    const fallback = switch (kind) {
+        .list => "taxonomy_list.shtml",
+        .single => "taxonomy_single.shtml",
+    };
+
+    _ = build.layouts_dir.statFile(fallback) catch |err| switch (err) {
+        error.FileNotFound => fatal.msg(
+            "error: missing taxonomy template '{s}'",
+            .{fallback},
+        ),
+        else => fatal.file(fallback, err),
+    };
+
+    return fallback;
+}
+
+fn loadTaxonomyLayout(
+    gpa: Allocator,
+    build: *Build,
+    rel_path: []const u8,
+) !TaxonomyLayout {
+    const max = std.math.maxInt(u32);
+    const src = build.layouts_dir.readFileAlloc(
+        gpa,
+        rel_path,
+        max,
+    ) catch |err| fatal.file(rel_path, err);
+    errdefer gpa.free(src);
+
+    const is_xml = std.mem.endsWith(u8, rel_path, ".xml");
+    var html_ast = superhtml.html.Ast.init(
+        gpa,
+        src,
+        if (is_xml) .xml else .superhtml,
+        false,
+    ) catch |err| {
+        fatal.msg(
+            "error: unable to parse taxonomy template '{s}': {s}",
+            .{ rel_path, @errorName(err) },
+        );
+    };
+    errdefer html_ast.deinit(gpa);
+
+    if (html_ast.errors.len > 0) {
+        std.debug.print("error: taxonomy template '{s}' has parsing errors\n", .{rel_path});
+        build.any_prerendering_error = true;
+        html_ast.deinit(gpa);
+        fatal.msg("error: taxonomy template '{s}' contains errors", .{rel_path});
+    }
+
+    const ast = superhtml.Ast.init(
+        gpa,
+        html_ast,
+        src,
+    ) catch |err| {
+        fatal.msg(
+            "error: unable to compile taxonomy template '{s}': {s}",
+            .{ rel_path, @errorName(err) },
+        );
+    };
+
+    return .{
+        .src = src,
+        .html_ast = html_ast,
+        .ast = ast,
+        .is_xml = is_xml,
+    };
+}
+
+fn getTaxonomyLayout(
+    gpa: Allocator,
+    build: *Build,
+    cache: *std.StringHashMap(TaxonomyLayout),
+    rel_path: []const u8,
+) !struct { path: []const u8, layout: *TaxonomyLayout } {
+    const gop = try cache.getOrPut(rel_path);
+    if (!gop.found_existing) {
+        const key_copy = try gpa.dupe(u8, rel_path);
+        gop.key_ptr.* = key_copy;
+        gop.value_ptr.* = try loadTaxonomyLayout(gpa, build, rel_path);
+    }
+    return .{
+        .path = gop.key_ptr.*,
+        .layout = gop.value_ptr,
+    };
+}
+
+fn renderTaxonomiesForVariants(
+    gpa: Allocator,
+    build: *Build,
+    sites: *const std.StringArrayHashMapUnmanaged(context.Site),
+) !void {
+    var layout_cache = std.StringHashMap(TaxonomyLayout).init(gpa);
+    defer {
+        var it = layout_cache.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(gpa);
+            gpa.free(entry.key_ptr.*);
+        }
+        layout_cache.deinit();
+    }
+
+    for (build.variants, 0..) |*variant, idx| {
+        if (variant.taxonomies.entries.items.len == 0) continue;
+        const site = &sites.entries.items(.value)[idx];
+        try renderVariantTaxonomies(
+            gpa,
+            build,
+            variant,
+            sites,
+            site,
+            &layout_cache,
+        );
+    }
+}
+
+fn renderVariantTaxonomies(
+    gpa: Allocator,
+    build: *Build,
+    variant: *Variant,
+    sites: *const std.StringArrayHashMapUnmanaged(context.Site),
+    site: *const context.Site,
+    cache: *std.StringHashMap(TaxonomyLayout),
+) !void {
+    if (variant.taxonomies.entries.items.len == 0) return;
+
+    const lang = switch (site._meta.kind) {
+        .simple => "",
+        .multi => |loc| loc.code,
+    };
+
+    for (variant.taxonomies.entries.items) |*inst| {
+        if (!inst.config.render) continue;
+
+        var arena_state = std.heap.ArenaAllocator.init(gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        const list_rel_path = try resolveTaxonomyLayoutPath(
+            arena,
+            build,
+            inst.name,
+            .list,
+        );
+        const list_layout = try getTaxonomyLayout(gpa, build, cache, list_rel_path);
+
+        const taxonomy_ctx = try buildTaxonomyContext(
+            arena,
+            variant,
+            site,
+            inst,
+        );
+
+        try renderTaxonomyDocument(
+            gpa,
+            build,
+            variant,
+            sites,
+            site,
+            inst,
+            null,
+            &taxonomy_ctx,
+            null,
+            list_layout.layout,
+            list_layout.path,
+            lang,
+        );
+
+        const term_rel_path = try resolveTaxonomyLayoutPath(
+            arena,
+            build,
+            inst.name,
+            .single,
+        );
+        const term_layout = try getTaxonomyLayout(gpa, build, cache, term_rel_path);
+
+        for (taxonomy_ctx.terms, 0..) |*term_ctx, term_idx| {
+            try renderTaxonomyDocument(
+                gpa,
+                build,
+                variant,
+                sites,
+                site,
+                inst,
+                term_idx,
+                &taxonomy_ctx,
+                term_ctx,
+                term_layout.layout,
+                term_layout.path,
+                lang,
+            );
+        }
+    }
+}
+
+fn selectTemplatePage(
+    variant: *Variant,
+    inst: *Taxonomy.Instance,
+    term_index: ?usize,
+) *const context.Page {
+    if (term_index) |idx| {
+        const term = &inst.terms.items[idx];
+        if (term.pages.items.len > 0) {
+            return &variant.pages.items[term.pages.items[0]];
+        }
+    }
+
+    for (inst.terms.items) |term| {
+        if (term.pages.items.len > 0) {
+            return &variant.pages.items[term.pages.items[0]];
+        }
+    }
+
+    if (variant.root_index) |root_idx| {
+        return &variant.pages.items[root_idx];
+    }
+
+    if (variant.pages.items.len > 0) {
+        return &variant.pages.items[0];
+    }
+
+    fatal.msg(
+        "error: taxonomy rendering requires at least one page in the variant",
+        .{},
+    );
+}
+
+fn renderTaxonomyDocument(
+    gpa: Allocator,
+    build: *Build,
+    variant: *Variant,
+    sites: *const std.StringArrayHashMapUnmanaged(context.Site),
+    site: *const context.Site,
+    inst: *Taxonomy.Instance,
+    term_index: ?usize,
+    taxonomy_ctx: *const context.Taxonomy,
+    term_ctx: ?*const context.TaxonomyTerm,
+    layout: *TaxonomyLayout,
+    layout_path: []const u8,
+    lang: []const u8,
+) !void {
+    const target = if (term_index) |idx|
+        inst.terms.items[idx].path
+    else
+        inst.list_path;
+
+    const current_path = if (term_ctx) |term|
+        term.path
+    else
+        taxonomy_ctx.path;
+    const current_url = if (term_ctx) |term|
+        term.permalink
+    else
+        taxonomy_ctx.permalink;
+
+    var out_aw: Writer.Allocating = .init(gpa);
+    var err_aw: Writer.Allocating = .init(gpa);
+    defer if (build.mode == .disk) err_aw.deinit();
+
+    var template_ctx: context.Template = .{
+        .site = site,
+        .page = selectTemplatePage(variant, inst, term_index),
+        .build = undefined,
+        .i18n = variant.i18n,
+        .taxonomy = context.Optional.Null,
+        .taxonomy_term = context.Optional.Null,
+        .current_path = current_path,
+        .current_url = current_url,
+        .lang = lang,
+        ._meta = .{
+            .build = build,
+            .sites = sites,
+        },
+    };
+    template_ctx.build.generated = .initNow();
+    template_ctx.taxonomy = try context.Value.from(gpa, taxonomy_ctx.*);
+    template_ctx.taxonomy_term = if (term_ctx) |term|
+        try context.Value.from(gpa, term.*)
+    else
+        context.Optional.Null;
+
+    var vm = TaxonomyVM.init(
+        gpa,
+        &template_ctx,
+        layout_path,
+        build.cfg.getLayoutsDirPath(),
+        layout.src,
+        layout.html_ast,
+        layout.ast,
+        layout.is_xml,
+        current_path,
+        &out_aw.writer,
+        &err_aw.writer,
+    );
+
+    while (true) vm.run() catch |err| switch (err) {
+        error.Done => break,
+        error.Fatal => {
+            std.debug.print("{s}\n", .{err_aw.written()});
+            build.any_rendering_error.store(true, .release);
+            if (build.mode == .memory) {
+                if (term_index) |idx| {
+                    inst.terms.items[idx].rendered = err_aw.written();
+                } else {
+                    inst.rendered_list = err_aw.written();
+                }
+            }
+            return;
+        },
+        error.OutOfMemory => fatal.oom(),
+        error.OutIO, error.ErrIO => fatal.msg("i/o error in superhtml", .{}),
+        error.Quota => vm.setQuota(100),
+        error.WantSnippet => @panic("TODO: load snippet"),
+        error.WantTemplate => {
+            const template_subpath = vm.wantedTemplateName();
+            const template_path = try join(
+                gpa,
+                &.{ "templates", template_subpath },
+                '/',
+            );
+            defer gpa.free(template_path);
+
+            const pn = PathName.get(&build.st, &build.pt, template_path).?;
+            const tpl = build.templates.get(pn).?;
+            assert(!tpl.layout);
+
+            vm.insertTemplate(
+                try join(
+                    gpa,
+                    &.{ build.cfg.getLayoutsDirPath(), template_path },
+                    '/',
+                ),
+                tpl.src,
+                tpl.html_ast,
+                tpl.ast,
+                std.mem.endsWith(u8, template_subpath, ".xml"),
+            );
+        },
+    };
+
+    switch (build.mode) {
+        .memory => {
+            if (term_index) |idx| {
+                inst.terms.items[idx].rendered = out_aw.written();
+            } else {
+                inst.rendered_list = out_aw.written();
+            }
+        },
+        .disk => |disk| {
+            defer out_aw.deinit();
+            const out_dir_path = try taxonomyOutputDir(
+                gpa,
+                build,
+                variant,
+                site,
+                target,
+            );
+            defer gpa.free(out_dir_path);
+
+            var out_dir = if (out_dir_path.len == 0)
+                disk.output_dir
+            else
+                disk.output_dir.makeOpenPath(out_dir_path, .{}) catch |err| fatal.dir(out_dir_path, err);
+            defer if (out_dir_path.len > 0) out_dir.close();
+
+            const file = out_dir.createFile(
+                "index.html",
+                .{},
+            ) catch |err| fatal.file("index.html", err);
+            defer file.close();
+
+            file.writeAll(out_aw.written()) catch |err| fatal.file(
+                out_dir_path,
+                err,
+            );
+        },
+    }
+}
+
+fn appendOrReplaceTaxonomy(
+    list: *std.ArrayList(*const TaxonomyConfig),
+    allocator: Allocator,
+    tax: *const TaxonomyConfig,
+) !void {
+    for (list.items, 0..) |existing, idx| {
+        if (std.mem.eql(u8, existing.name, tax.name)) {
+            list.items[idx] = tax;
+            return;
+        }
+    }
+
+    try list.append(allocator, tax);
+}
 
 // Mirrors closely the corresponding type in build.zig
 pub const BuildAsset = struct {
@@ -1428,6 +2071,32 @@ pub fn run(
         build.any_prerendering_error = true;
         return build;
     }
+
+    switch (build.cfg.*) {
+        .Site => |s| {
+            const slice = try gpa.alloc(*const TaxonomyConfig, s.taxonomies.len);
+            defer gpa.free(slice);
+            for (s.taxonomies, 0..) |*tax, idx| slice[idx] = tax;
+            try build.variants[0].collectTaxonomies(gpa, slice);
+        },
+        .Multilingual => |ml| {
+            for (ml.locales, 0..) |loc, variant_idx| {
+                var list = try std.ArrayList(*const TaxonomyConfig).initCapacity(gpa, 0);
+                defer list.deinit(gpa);
+
+                for (ml.taxonomies) |*tax| try appendOrReplaceTaxonomy(&list, gpa, tax);
+                if (loc.taxonomies) |custom| {
+                    for (custom) |*tax| try appendOrReplaceTaxonomy(&list, gpa, tax);
+                }
+
+                const slice = try list.toOwnedSlice(gpa);
+                defer gpa.free(slice);
+                try build.variants[variant_idx].collectTaxonomies(gpa, slice);
+            }
+        },
+    }
+
+    try renderTaxonomiesForVariants(gpa, &build, &sites);
 
     var pages_to_render: usize = 0;
     var progress_page_render = progress.start("Render pages", 0);

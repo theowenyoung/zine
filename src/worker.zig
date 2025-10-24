@@ -306,6 +306,91 @@ fn analyzeFrontmatter(page_arena: Allocator, p: *Page) error{OutOfMemory}!void {
             },
         });
     }
+
+    var assignments = std.ArrayListUnmanaged(Page.TaxonomyAssignment){};
+
+    switch (p.taxonomies) {
+        .kv => |kv| {
+            var it = kv.fields.iterator();
+            while (it.next()) |entry| {
+                const name = entry.key_ptr.*;
+                if (!root.isValidTaxonomyIdentifier(name)) {
+                    try errors.append(page_arena, .{
+                        .taxonomy = .{
+                            .name = name,
+                            .kind = .invalid_name,
+                        },
+                    });
+                    continue;
+                }
+
+                const value = entry.value_ptr.*;
+                if (value != .array) {
+                    try errors.append(page_arena, .{
+                        .taxonomy = .{
+                            .name = name,
+                            .kind = .invalid_value,
+                        },
+                    });
+                    continue;
+                }
+
+                const terms_value = value.array;
+                var terms_buffer = std.ArrayListUnmanaged([]const u8){};
+                var valid_terms = true;
+                for (terms_value, 0..) |term_value, term_idx| {
+                    switch (term_value) {
+                        .bytes => |bytes| {
+                            if (bytes.len == 0) {
+                                try errors.append(page_arena, .{
+                                    .taxonomy = .{
+                                        .name = name,
+                                        .kind = .{ .term_empty = @intCast(term_idx) },
+                                    },
+                                });
+                                valid_terms = false;
+                                continue;
+                            }
+                            try terms_buffer.append(page_arena, bytes);
+                        },
+                        else => {
+                            try errors.append(page_arena, .{
+                                .taxonomy = .{
+                                    .name = name,
+                                    .kind = .term_not_string,
+                                },
+                            });
+                            valid_terms = false;
+                        },
+                    }
+                }
+
+                if (!valid_terms) continue;
+
+                const terms = try page_arena.alloc([]const u8, terms_buffer.items.len);
+                @memcpy(terms, terms_buffer.items);
+                try assignments.append(page_arena, .{
+                    .name = name,
+                    .terms = terms,
+                });
+            }
+        },
+        .null => {},
+        else => {
+            try errors.append(page_arena, .{
+                .taxonomy = .{
+                    .name = "taxonomies",
+                    .kind = .invalid_value,
+                },
+            });
+        },
+    }
+
+    if (assignments.items.len > 0) {
+        const slice = try page_arena.alloc(Page.TaxonomyAssignment, assignments.items.len);
+        @memcpy(slice, assignments.items);
+        p.taxonomy_assignments = slice;
+    }
 }
 
 fn analyzeContent(

@@ -1,4 +1,6 @@
+.DS_Store
 public
+.zig-global-cache
 .zine-cache
 .zig-cache
 zig-cache

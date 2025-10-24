@@ -1,0 +1,15 @@
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Category Index – $taxonomy.name</title>
+  </head>
+  <body>
+    <h1 :text="$taxonomy.name"></h1>
+    <ul :loop="$taxonomy.terms">
+      <li>
+        <a :href="$loop.it.path" :text="$loop.it.name"></a>
+        <span>(<span :text="$loop.it.pages.len"></span> 篇文章)</span>
+      </li>
+    </ul>
+  </body>
+</html>

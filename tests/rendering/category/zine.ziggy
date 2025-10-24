@@ -1,0 +1,13 @@
+Site {
+    .title = "Category Taxonomy Demo",
+    .host_url = "https://example.com",
+    .layouts_dir_path = "layouts",
+    .content_dir_path = "content",
+    .assets_dir_path = "assets",
+    .taxonomies = [{
+        .name = "category",
+        .render = true,
+        .paginate_by = 10,
+        .paginate_path = "page",
+    }],
+}

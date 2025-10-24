@@ -1,0 +1,17 @@
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>$taxonomy_term.name – Category</title>
+  </head>
+  <body>
+    <h1 :text="$taxonomy_term.name"></h1>
+    <ol :loop="$taxonomy_term.pages">
+      <li>
+        <a :href="$loop.it.link()" :text="$loop.it.title"></a>
+      </li>
+    </ol>
+    <p>
+      <a href="$taxonomy.path">Back to categories</a>
+    </p>
+  </body>
+</html>

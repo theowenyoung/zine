@@ -221,8 +221,9 @@ fn collectGitInfo(
     );
     defer f.close();
 
-    var buf = std.ArrayList(u8).init(arena);
-    ziggy.stringify(g, .{}, buf.writer()) catch fatal(
+    var buf = try std.ArrayList(u8).initCapacity(arena, 0);
+    defer buf.deinit(arena);
+    ziggy.stringify(g, .{}, buf.writer(arena)) catch fatal(
         "unexpected",
         .{},
     );

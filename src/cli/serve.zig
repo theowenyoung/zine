@@ -795,6 +795,35 @@ pub const Server = struct {
                         subpath,
                     ) catch |err| fatal.file(path, err);
                 },
+                .taxonomy_list => {
+                    const taxonomy = &v.taxonomies.entries.items[hint.id];
+                    if (taxonomy.rendered_list.len == 0) return sendError(
+                        arena,
+                        req,
+                        "Taxonomy page was not rendered",
+                    );
+
+                    return sendHtml(
+                        arena,
+                        req,
+                        taxonomy.rendered_list,
+                    ) catch |err| fatal.file(path, err);
+                },
+                .taxonomy_term => |info| {
+                    const taxonomy = &v.taxonomies.entries.items[info.taxonomy];
+                    const term = &taxonomy.terms.items[info.term];
+                    if (term.rendered.len == 0) return sendError(
+                        arena,
+                        req,
+                        "Taxonomy term was not rendered",
+                    );
+
+                    return sendHtml(
+                        arena,
+                        req,
+                        term.rendered,
+                    ) catch |err| fatal.file(path, err);
+                },
             }
         }
 

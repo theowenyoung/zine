@@ -15,11 +15,18 @@ const Build = context.Build;
 const Map = context.Map;
 const Iterator = context.Iterator;
 const Optional = context.Optional;
+const Taxonomy = context.Taxonomy;
+const TaxonomyTerm = context.TaxonomyTerm;
 
 site: *const Site,
 page: *const Page,
 build: Build,
 i18n: Map.ZiggyMap,
+taxonomy: Value = context.Optional.Null,
+taxonomy_term: Value = context.Optional.Null,
+current_path: []const u8 = "",
+current_url: []const u8 = "",
+lang: []const u8 = "",
 
 _meta: struct {
     build: *const ZineBuild,

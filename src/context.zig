@@ -40,6 +40,9 @@ pub const Map = @import("context/Map.zig");
 pub const Optional = @import("context/Optional.zig");
 pub const Iterator = @import("context/Iterator.zig");
 pub const Array = @import("context/Array.zig");
+pub const Taxonomy = @import("context/Taxonomy.zig");
+pub const TaxonomyTerm = @import("context/TaxonomyTerm.zig");
+pub const TaxonomyConfig = @import("context/TaxonomyConfig.zig");
 
 pub const Value = union(enum) {
     template: *const Template,
@@ -63,6 +66,10 @@ pub const Value = union(enum) {
     iterator: *context.Iterator,
     array: Array,
     map_kv: Map.KV,
+    taxonomy: Taxonomy,
+    taxonomy_term: TaxonomyTerm,
+    taxonomy_config: TaxonomyConfig,
+    taxonomy_assignment: Page.TaxonomyAssignment,
     err: []const u8,
 
     pub const Bool = context.Bool;
@@ -135,6 +142,13 @@ pub const Value = union(enum) {
             Page.Alternative => .{ .alternative = v },
             Page.ContentSection => .{ .content_section = v },
             Page.Footnote => .{ .footnote = v },
+            Page.TaxonomyAssignment => .{ .taxonomy_assignment = v },
+            Taxonomy => .{ .taxonomy = v },
+            TaxonomyTerm => .{ .taxonomy_term = v },
+            TaxonomyConfig => .{ .taxonomy_config = v },
+            *const TaxonomyConfig => .{ .taxonomy_config = v.* },
+            root.TaxonomyConfig => .{ .taxonomy_config = TaxonomyConfig.init(&v) },
+            *const root.TaxonomyConfig => .{ .taxonomy_config = TaxonomyConfig.init(v) },
             *const Build => .{ .build = v },
             Git => .{ .git = v },
             Ctx(Value) => .{ .ctx = v },
@@ -155,6 +169,18 @@ pub const Value = union(enum) {
                 try context.Optional.init(gpa, opt)
             else
                 context.Optional.Null,
+            ?usize => if (v) |opt|
+                try context.Optional.init(gpa, opt)
+            else
+                context.Optional.Null,
+            ?Taxonomy => if (v) |opt|
+                try context.Optional.init(gpa, opt)
+            else
+                context.Optional.Null,
+            ?TaxonomyTerm => if (v) |opt|
+                try context.Optional.init(gpa, opt)
+            else
+                context.Optional.Null,
             Value => v,
             ?Value => if (v) |opt|
                 try context.Optional.init(gpa, opt)
@@ -165,6 +191,9 @@ pub const Value = union(enum) {
             } else .{ .err = "$loop is not set" },
             *context.Iterator => .{ .iterator = v },
             []const []const u8 => try Array.init(gpa, []const u8, v),
+            []const Page.TaxonomyAssignment => try Array.init(gpa, Page.TaxonomyAssignment, v),
+            []const TaxonomyTerm => try Array.init(gpa, TaxonomyTerm, v),
+            []const Value => try Array.init(gpa, Value, v),
 
             // .{
             //     .iterator = try context.Iterator.init(gpa, .{

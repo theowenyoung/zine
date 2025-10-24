@@ -1,0 +1,12 @@
+---
+.title = "入门指南",
+.author = "Sample Author",
+.date = @date("2024-02-01T00:00:00"),
+.layout = "base.shtml",
+.taxonomies = {
+    "category": ["指南", "Zig"],
+},
+.draft = false,
+---
+
+这是一篇面向新手的文章，记录了如何使用 Zine 创建站点及配置分类。

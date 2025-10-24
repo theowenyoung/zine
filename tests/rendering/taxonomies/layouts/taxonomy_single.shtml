@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title :text="$taxonomy_term.name"></title>
+</head>
+<body>
+    <h1>Term: <span :text="$taxonomy_term.name"></span></h1>
+    <p>Slug: <span :text="$taxonomy_term.slug"></span></p>
+    <p>Page count: <span :text="$taxonomy_term.pages.len"></span></p>
+    <h2>Pages:</h2>
+    <ul :loop="$taxonomy_term.pages">
+        <li :text="$loop.it.title"></li>
+    </ul>
+</body>
+</html>

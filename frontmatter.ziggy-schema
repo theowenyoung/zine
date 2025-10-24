@@ -13,6 +13,7 @@ struct Frontmatter {
     author: ?bytes,
     date: ?@date,
     tags: ?[bytes],
+    taxonomies: ?map[any],
     ///Alternative paths where this content will also be 
     ///made available.
     aliases: ?[bytes],

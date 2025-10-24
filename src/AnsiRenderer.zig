@@ -77,13 +77,13 @@ const Charset = enum {
 pub fn renderSlice(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
     var fbs = std.io.fixedBufferStream(src);
 
-    var out = std.ArrayList(u8).init(allocator);
-    defer out.deinit();
+    var out = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer out.deinit(allocator);
 
     var renderer: AnsiRenderer = .{};
-    try renderer.render(fbs.reader(), out.writer());
+    try renderer.render(fbs.reader(), out.writer(allocator));
 
-    return try out.toOwnedSlice();
+    return try out.toOwnedSlice(allocator);
 }
 
 fn render(renderer: *AnsiRenderer, reader: *Reader, writer: *Writer) !void {

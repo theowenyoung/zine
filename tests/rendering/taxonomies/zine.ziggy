@@ -1,0 +1,17 @@
+Site {
+    .title = "Taxonomy Test Site",
+    .host_url = "https://test.com",
+    .content_dir_path = "content",
+    .layouts_dir_path = "layouts",
+    .assets_dir_path = "assets",
+    .taxonomies = [
+        {
+            .name = "categories",
+            .render = true,
+        },
+        {
+            .name = "authors",
+            .render = true,
+        },
+    ],
+}

@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>All terms</title>
+</head>
+<body>
+    <h1>Taxonomy List Page</h1>
+    <p>Taxonomy: <span :text="$taxonomy.name"></span></p>
+    <p>Total terms: <span :text="$taxonomy.terms.len"></span></p>
+    <ul :loop="$taxonomy.terms">
+        <li>
+            <span :text="$loop.it.name"></span>
+            (<span :text="$loop.it.pages.len"></span> pages)
+        </li>
+    </ul>
+</body>
+</html>

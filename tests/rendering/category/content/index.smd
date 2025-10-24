@@ -1,0 +1,9 @@
+---
+.title = "Category Demo",
+.author = "Sample Author",
+.date = @date("2024-01-01T00:00:00"),
+.layout = "base.shtml",
+.draft = false,
+---
+
+欢迎来到分类示例站点。下面的文章分配了不同的 `category` 标签，Zine 会为每个分类生成列表页。

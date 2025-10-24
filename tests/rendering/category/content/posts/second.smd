@@ -1,0 +1,12 @@
+---
+.title = "部署笔记",
+.author = "Sample Author",
+.date = @date("2024-03-01T00:00:00"),
+.layout = "base.shtml",
+.taxonomies = {
+    "category": ["部署"],
+},
+.draft = false,
+---
+
+这篇文章介绍了如何将生成的站点部署到静态托管平台。

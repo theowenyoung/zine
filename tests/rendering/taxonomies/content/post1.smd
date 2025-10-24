@@ -1,0 +1,11 @@
+---
+.title = "First Post",
+.date = @date("2024-01-02T00:00:00"),
+.author = "Alice",
+.layout = "page.shtml",
+.taxonomies = {
+    .categories = ["Tech", "Web Development"],
+    .authors = ["Alice"],
+},
+---
+This is the first post about tech and web development.

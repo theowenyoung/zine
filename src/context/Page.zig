@@ -46,6 +46,8 @@ date: DateTime,
 layout: []const u8,
 draft: bool = false,
 tags: []const []const u8 = &.{},
+taxonomies: ziggy.dynamic.Value = .{ .kv = .{} },
+taxonomy_assignments: []const TaxonomyAssignment = &.{},
 aliases: []const []const u8 = &.{},
 alternatives: []const Alternative = &.{},
 skip_subdirs: bool = false,
@@ -117,6 +119,22 @@ _render: struct {
     },
 } = undefined,
 
+pub const TaxonomyAssignment = struct {
+    name: []const u8,
+    terms: []const []const u8,
+
+    pub const dot = scripty.defaultDot(TaxonomyAssignment, Value, false);
+    pub const PassByRef = true;
+    pub const docs_description =
+        \\Normalized taxonomy assignment for the current page.
+    ;
+    pub const Fields = struct {
+        pub const name = "Taxonomy name.";
+        pub const terms = "List of terms attached to this taxonomy.";
+    };
+    pub const Builtins = struct {};
+};
+
 pub const PageAnalysisError = struct {
     node: supermd.Node,
     kind: union(enum) {
@@ -177,6 +195,15 @@ pub const FrontmatterAnalysisError = union(enum) {
             layout,
         },
     },
+    taxonomy: struct {
+        name: []const u8,
+        kind: union(enum) {
+            invalid_name,
+            invalid_value,
+            term_not_string,
+            term_empty: u32,
+        },
+    },
 
     pub fn title(err: @This()) []const u8 {
         return switch (err) {
@@ -186,6 +213,12 @@ pub const FrontmatterAnalysisError = union(enum) {
                 .name => "invalid name in alternatives",
                 .path => "invalid path in alternatives",
                 .layout => "invalid layout in alternatives",
+            },
+            .taxonomy => |t| switch (t.kind) {
+                .invalid_name => "invalid taxonomy name",
+                .invalid_value => "invalid taxonomy value",
+                .term_not_string => "invalid taxonomy term",
+                .term_empty => "empty taxonomy term",
             },
         };
     }
@@ -255,6 +288,19 @@ pub const FrontmatterAnalysisError = union(enum) {
                     }
                 }
             },
+            .taxonomy => {
+                assert(ast.nodes[2].tag == .@"struct" or
+                    ast.nodes[2].tag == .braceless_struct);
+                var current = ast.nodes[3];
+                while (true) : (current = ast.nodes[current.next_id]) {
+                    assert(current.tag == .struct_field);
+
+                    const identifier = ast.nodes[current.first_child_id];
+                    if (std.mem.eql(u8, "taxonomies", identifier.loc.src(src))) {
+                        return ast.nodes[identifier.next_id].loc;
+                    }
+                }
+            },
         }
 
         // Failing to find the source location of a reported error is a
@@ -300,6 +346,26 @@ pub const FrontmatterAnalysisError = union(enum) {
                                 .{alt.name},
                             );
                         },
+                    }
+                },
+                .taxonomy => |terr| {
+                    switch (terr.kind) {
+                        .invalid_name => try writer.print(
+                            "taxonomy '{s}' must only contain ASCII letters, digits, '_' or '-'",
+                            .{terr.name},
+                        ),
+                        .invalid_value => try writer.print(
+                            "taxonomy '{s}' must be an array of strings",
+                            .{terr.name},
+                        ),
+                        .term_not_string => try writer.print(
+                            "taxonomy '{s}' contains a non-string term",
+                            .{terr.name},
+                        ),
+                        .term_empty => |idx| try writer.print(
+                            "taxonomy '{s}' has an empty term at index {}",
+                            .{ terr.name, idx },
+                        ),
                     }
                 },
             }
@@ -622,6 +688,12 @@ pub const Fields = struct {
     pub const tags =
         \\Tags associated with the page, 
         \\as set in the SuperMD frontmatter.
+    ;
+    pub const taxonomies =
+        \\Raw taxonomy definitions from the frontmatter.
+    ;
+    pub const taxonomy_assignments =
+        \\Normalized taxonomy assignments for this page.
     ;
     pub const aliases =
         \\Aliases of the current page, 
